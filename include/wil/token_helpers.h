@@ -447,14 +447,38 @@ namespace wil
             SID_IDENTIFIER_AUTHORITY IdentifierAuthority;
             DWORD SubAuthority[AuthorityCount];
 
-            PSID get()
+            WI_NODISCARD __WI_LIBCPP_CONSTEXPR PSID get() const WI_NOEXCEPT
             {
-                return reinterpret_cast<PSID>(this);
+                return const_cast<static_sid_t *>(this);
             }
 
             template<size_t other> static_sid_t& operator=(const static_sid_t<other>& source)
             {
                 static_assert(other <= AuthorityCount, "Cannot assign from a larger static sid to a smaller one");
+
+                if (&this->Revision != &source.Revision)
+                {
+                    memcpy(this, &source, sizeof(source));
+                }
+
+                return *this;
+            }
+        };
+
+        template<> struct static_sid_t<0>
+        {
+            BYTE Revision;
+            BYTE SubAuthorityCount;
+            SID_IDENTIFIER_AUTHORITY IdentifierAuthority;
+
+            WI_NODISCARD __WI_LIBCPP_CONSTEXPR PSID get() const WI_NOEXCEPT
+            {
+                return const_cast<static_sid_t *>(this);
+            }
+
+            template<size_t other> static_sid_t& operator=(const static_sid_t<other>& source)
+            {
+                static_assert(other != 0, "Cannot assign from a larger static sid to a smaller one");
 
                 if (&this->Revision != &source.Revision)
                 {
@@ -494,6 +518,230 @@ namespace wil
     {
         return make_static_sid(SECURITY_NT_AUTHORITY, wistd::forward<Ts>(subAuthorities)...);
     }
+
+#if __WI_LIBCPP_STD_VER >= 14
+    namespace details
+    {
+        class sid_literal_builder_t;
+
+        template<std::size_t AuthorityCount> struct static_sid_builder_t : static_sid_t<AuthorityCount> {};
+
+        template<std::size_t AuthorityCount>
+        WI_NODISCARD constexpr const static_sid_t<AuthorityCount>& unwrap(const static_sid_builder_t<AuthorityCount>& builder) noexcept
+        {
+            return builder;
+        }
+
+        template<std::size_t AuthorityCount>
+        WI_NODISCARD constexpr auto get(const static_sid_builder_t<AuthorityCount>& builder) noexcept
+        {
+            return unwrap(builder).get();
+        }
+
+        namespace details
+        {
+            template<std::size_t AuthorityCount, std::size_t... AuthorityIndexes>
+            WI_NODISCARD constexpr auto add_rid_helper(const static_sid_builder_t<AuthorityCount>& builder, DWORD rid, std::index_sequence<AuthorityIndexes...>) noexcept
+            {
+                static_assert(AuthorityCount < SID_MAX_SUB_AUTHORITIES, "too many subauthorities");
+
+                return static_sid_builder_t<AuthorityCount + 1>
+                {
+                    builder.Revision,
+                    static_cast<BYTE>(builder.SubAuthorityCount + 1),
+                    builder.IdentifierAuthority,
+                    { builder.SubAuthority[AuthorityIndexes]..., rid }
+                };
+            }
+        }
+
+        template<size_t AuthorityCount, size_t... AuthorityIndexes>
+        WI_NODISCARD constexpr auto add_rid(const static_sid_builder_t<AuthorityCount>& base_sid, DWORD rid) noexcept
+        {
+            return details::add_rid_helper(base_sid, rid, std::make_index_sequence<AuthorityCount>());
+        }
+
+        template<size_t AuthorityCount>
+        WI_NODISCARD constexpr auto operator-(const static_sid_builder_t<AuthorityCount>& builder, DWORD rid) noexcept
+        {
+            return add_rid(builder, rid);
+        }
+
+        class sid_literal_builder_t
+        {
+        private:
+            struct with_revision
+            {
+                explicit constexpr with_revision() noexcept {}
+
+                with_revision(const with_revision&) = delete;
+                with_revision& operator=(const with_revision&) = delete;
+
+                WI_NODISCARD constexpr static_sid_builder_t<0> operator-(ULONGLONG identifier_authority_value) const noexcept
+                {
+                    WI_ASSERT_MSG(identifier_authority_value < 0xFFFF000000000000, "identifier authority out of range");
+
+                    return static_sid_builder_t<0>{
+                        {
+                            SID_REVISION,
+                            0,
+                            {
+                                static_cast<BYTE>((identifier_authority_value >> 40) & 0xFF),
+                                static_cast<BYTE>((identifier_authority_value >> 32) & 0xFF),
+                                static_cast<BYTE>((identifier_authority_value >> 24) & 0xFF),
+                                static_cast<BYTE>((identifier_authority_value >> 16) & 0xFF),
+                                static_cast<BYTE>((identifier_authority_value >> 8) & 0xFF),
+                                static_cast<BYTE>((identifier_authority_value >> 0) & 0xFF),
+                            }
+                        }
+                    };
+                }
+            };
+
+        public:
+            explicit constexpr sid_literal_builder_t() noexcept {}
+
+            WI_NODISCARD constexpr with_revision operator-(int revision) const noexcept
+            {
+                WI_ASSERT_MSG(revision == SID_REVISION, "SID revision is not SID_REVISION");
+                return with_revision{};
+            }
+        };
+    }
+
+    __WI_LIBCPP_INLINE_VAR constexpr details::sid_literal_builder_t S{};
+#endif
+
+#if __WI_LIBCPP_STD_VER >= 14
+    namespace details
+    {
+        template<WELL_KNOWN_SID_TYPE Type> struct well_known_sid_helper_t;
+
+        template<> struct well_known_sid_helper_t<::WinNullSid> { static constexpr auto get() noexcept { return S-1-0-0; } };
+        template<> struct well_known_sid_helper_t<::WinWorldSid> { static constexpr auto get() noexcept { return S-1-1-0; } };
+        template<> struct well_known_sid_helper_t<::WinLocalSid> { static constexpr auto get() noexcept { return S-1-2-0; } };
+        template<> struct well_known_sid_helper_t<::WinCreatorOwnerSid> { static constexpr auto get() noexcept { return S-1-3-0; } };
+        template<> struct well_known_sid_helper_t<::WinCreatorGroupSid> { static constexpr auto get() noexcept { return S-1-3-1; } };
+        template<> struct well_known_sid_helper_t<::WinCreatorOwnerServerSid> { static constexpr auto get() noexcept { return S-1-3-2; } };
+        template<> struct well_known_sid_helper_t<::WinCreatorGroupServerSid> { static constexpr auto get() noexcept { return S-1-3-3; } };
+        template<> struct well_known_sid_helper_t<::WinNtAuthoritySid> { static constexpr auto get() noexcept { return S-1-5; } };
+        template<> struct well_known_sid_helper_t<::WinDialupSid> { static constexpr auto get() noexcept { return S-1-5-1; } };
+        template<> struct well_known_sid_helper_t<::WinNetworkSid> { static constexpr auto get() noexcept { return S-1-5-2; } };
+        template<> struct well_known_sid_helper_t<::WinBatchSid> { static constexpr auto get() noexcept { return S-1-5-3; } };
+        template<> struct well_known_sid_helper_t<::WinInteractiveSid> { static constexpr auto get() noexcept { return S-1-5-4; } };
+        template<> struct well_known_sid_helper_t<::WinServiceSid> { static constexpr auto get() noexcept { return S-1-5-6; } };
+        template<> struct well_known_sid_helper_t<::WinAnonymousSid> { static constexpr auto get() noexcept { return S-1-5-7; } };
+        template<> struct well_known_sid_helper_t<::WinProxySid> { static constexpr auto get() noexcept { return S-1-5-8; } };
+        template<> struct well_known_sid_helper_t<::WinEnterpriseControllersSid> { static constexpr auto get() noexcept { return S-1-5-9; } };
+        template<> struct well_known_sid_helper_t<::WinSelfSid> { static constexpr auto get() noexcept { return S-1-5-10; } };
+        template<> struct well_known_sid_helper_t<::WinAuthenticatedUserSid> { static constexpr auto get() noexcept { return S-1-5-11; } };
+        template<> struct well_known_sid_helper_t<::WinRestrictedCodeSid> { static constexpr auto get() noexcept { return S-1-5-12; } };
+        template<> struct well_known_sid_helper_t<::WinTerminalServerSid> { static constexpr auto get() noexcept { return S-1-5-13; } };
+        template<> struct well_known_sid_helper_t<::WinRemoteLogonIdSid> { static constexpr auto get() noexcept { return S-1-5-14; } };
+        // WinLogonIdsSid
+        template<> struct well_known_sid_helper_t<::WinLocalSystemSid> { static constexpr auto get() noexcept { return S-1-5-18; } };
+        template<> struct well_known_sid_helper_t<::WinLocalServiceSid> { static constexpr auto get() noexcept { return S-1-5-19; } };
+        template<> struct well_known_sid_helper_t<::WinNetworkServiceSid> { static constexpr auto get() noexcept { return S-1-5-20; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinDomainSid> { static constexpr auto get() noexcept { return S-1-5-32; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinAdministratorsSid> { static constexpr auto get() noexcept { return S-1-5-32-544; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-545; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinGuestsSid> { static constexpr auto get() noexcept { return S-1-5-32-546; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinPowerUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-547; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinAccountOperatorsSid> { static constexpr auto get() noexcept { return S-1-5-32-548; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinSystemOperatorsSid> { static constexpr auto get() noexcept { return S-1-5-32-549; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinPrintOperatorsSid> { static constexpr auto get() noexcept { return S-1-5-32-550; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinBackupOperatorsSid> { static constexpr auto get() noexcept { return S-1-5-32-551; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinReplicatorSid> { static constexpr auto get() noexcept { return S-1-5-32-552; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinPreWindows2000CompatibleAccessSid> { static constexpr auto get() noexcept { return S-1-5-32-554; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinRemoteDesktopUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-555; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinNetworkConfigurationOperatorsSid> { static constexpr auto get() noexcept { return S-1-5-32-556; } };
+        // TODO: WinAccountAdministratorSid
+        // TODO: WinAccountGuestSid
+        // TODO: WinAccountKrbtgtSid
+        // TODO: WinAccountDomainAdminsSid
+        // TODO: WinAccountDomainUsersSid
+        // TODO: WinAccountDomainGuestsSid
+        // TODO: WinAccountComputersSid
+        // TODO: WinAccountControllersSid
+        // TODO: WinAccountCertAdminsSid
+        // TODO: WinAccountSchemaAdminsSid
+        // TODO: WinAccountEnterpriseAdminsSid
+        // TODO: WinAccountPolicyAdminsSid
+        // TODO: WinAccountRasAndIasServersSid
+        template<> struct well_known_sid_helper_t<::WinNTLMAuthenticationSid> { static constexpr auto get() noexcept { return S-1-5-64-10; } };
+        template<> struct well_known_sid_helper_t<::WinDigestAuthenticationSid> { static constexpr auto get() noexcept { return S-1-5-64-21; } };
+        template<> struct well_known_sid_helper_t<::WinSChannelAuthenticationSid> { static constexpr auto get() noexcept { return S-1-5-64-14; } };
+        template<> struct well_known_sid_helper_t<::WinThisOrganizationSid> { static constexpr auto get() noexcept { return S-1-5-15; } };
+        template<> struct well_known_sid_helper_t<::WinOtherOrganizationSid> { static constexpr auto get() noexcept { return S-1-5-1000; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinIncomingForestTrustBuildersSid> { static constexpr auto get() noexcept { return S-1-5-32-557; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinPerfMonitoringUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-558; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinPerfLoggingUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-559; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinAuthorizationAccessSid> { static constexpr auto get() noexcept { return S-1-5-32-560; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinTerminalServerLicenseServersSid> { static constexpr auto get() noexcept { return S-1-5-32-561; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinDCOMUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-562; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinIUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-568; } };
+        template<> struct well_known_sid_helper_t<::WinIUserSid> { static constexpr auto get() noexcept { return S-1-5-17; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinCryptoOperatorsSid> { static constexpr auto get() noexcept { return S-1-5-32-569; } };
+        template<> struct well_known_sid_helper_t<::WinUntrustedLabelSid> { static constexpr auto get() noexcept { return S-1-16-0; } };
+        template<> struct well_known_sid_helper_t<::WinLowLabelSid> { static constexpr auto get() noexcept { return S-1-16-4096; } };
+        template<> struct well_known_sid_helper_t<::WinMediumLabelSid> { static constexpr auto get() noexcept { return S-1-16-8192; } };
+        template<> struct well_known_sid_helper_t<::WinHighLabelSid> { static constexpr auto get() noexcept { return S-1-16-12288; } };
+        template<> struct well_known_sid_helper_t<::WinSystemLabelSid> { static constexpr auto get() noexcept { return S-1-16-16384; } };
+        template<> struct well_known_sid_helper_t<::WinWriteRestrictedCodeSid> { static constexpr auto get() noexcept { return S-1-5-33; } };
+        template<> struct well_known_sid_helper_t<::WinCreatorOwnerRightsSid> { static constexpr auto get() noexcept { return S-1-3-4; } };
+        // TODO: WinCacheablePrincipalsGroupSid
+        // TODO: WinNonCacheablePrincipalsGroupSid
+        template<> struct well_known_sid_helper_t<::WinEnterpriseReadonlyControllersSid> { static constexpr auto get() noexcept { return S-1-5-22; } };
+        // TODO: WinAccountReadonlyControllersSid
+        template<> struct well_known_sid_helper_t<::WinBuiltinEventLogReadersGroup> { static constexpr auto get() noexcept { return S-1-5-32-573; } };
+        // TODO: WinNewEnterpriseReadonlyControllersSid
+        template<> struct well_known_sid_helper_t<::WinBuiltinCertSvcDComAccessGroup> { static constexpr auto get() noexcept { return S-1-5-32-574; } };
+        template<> struct well_known_sid_helper_t<::WinMediumPlusLabelSid> { static constexpr auto get() noexcept { return S-1-16-8448; } };
+        // WinLocalLogonSid
+        template<> struct well_known_sid_helper_t<::WinConsoleLogonSid> { static constexpr auto get() noexcept { return S-1-2-1; } };
+        template<> struct well_known_sid_helper_t<::WinThisOrganizationCertificateSid> { static constexpr auto get() noexcept { return S-1-5-65-1; } };
+        // WinApplicationPackageAuthoritySid
+        template<> struct well_known_sid_helper_t<::WinBuiltinAnyPackageSid> { static constexpr auto get() noexcept { return S-1-15-2-1; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityInternetClientSid> { static constexpr auto get() noexcept { return S-1-15-3-1; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityInternetClientServerSid> { static constexpr auto get() noexcept { return S-1-15-3-2; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityPrivateNetworkClientServerSid> { static constexpr auto get() noexcept { return S-1-15-3-3; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityPicturesLibrarySid> { static constexpr auto get() noexcept { return S-1-15-3-4; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityVideosLibrarySid> { static constexpr auto get() noexcept { return S-1-15-3-5; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityMusicLibrarySid> { static constexpr auto get() noexcept { return S-1-15-3-6; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityDocumentsLibrarySid> { static constexpr auto get() noexcept { return S-1-15-3-7; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilitySharedUserCertificatesSid> { static constexpr auto get() noexcept { return S-1-15-3-9; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityEnterpriseAuthenticationSid> { static constexpr auto get() noexcept { return S-1-15-3-8; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityRemovableStorageSid> { static constexpr auto get() noexcept { return S-1-15-3-10; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinRDSRemoteAccessServersSid> { static constexpr auto get() noexcept { return S-1-5-32-575; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinRDSEndpointServersSid> { static constexpr auto get() noexcept { return S-1-5-32-576; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinRDSManagementServersSid> { static constexpr auto get() noexcept { return S-1-5-32-577; } };
+        template<> struct well_known_sid_helper_t<::WinUserModeDriversSid> { static constexpr auto get() noexcept { return S-1-5-84-0-0-0-0-0; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinHyperVAdminsSid> { static constexpr auto get() noexcept { return S-1-5-32-578; } };
+        // TODO: WinAccountCloneableControllersSid
+        template<> struct well_known_sid_helper_t<::WinBuiltinAccessControlAssistanceOperatorsSid> { static constexpr auto get() noexcept { return S-1-5-32-579; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinRemoteManagementUsersSid> { static constexpr auto get() noexcept { return S-1-5-32-580; } };
+        template<> struct well_known_sid_helper_t<::WinAuthenticationAuthorityAssertedSid> { static constexpr auto get() noexcept { return S-1-18-1; } };
+        template<> struct well_known_sid_helper_t<::WinAuthenticationServiceAssertedSid> { static constexpr auto get() noexcept { return S-1-18-2; } };
+        template<> struct well_known_sid_helper_t<::WinLocalAccountSid> { static constexpr auto get() noexcept { return S-1-5-113; } };
+        template<> struct well_known_sid_helper_t<::WinLocalAccountAndAdministratorSid> { static constexpr auto get() noexcept { return S-1-5-114; } };
+        // TODO: WinAccountProtectedUsersSid
+        template<> struct well_known_sid_helper_t<::WinCapabilityAppointmentsSid> { static constexpr auto get() noexcept { return S-1-15-3-11; } };
+        template<> struct well_known_sid_helper_t<::WinCapabilityContactsSid> { static constexpr auto get() noexcept { return S-1-15-3-12; } };
+        // TODO: WinAccountDefaultSystemManagedSid
+        template<> struct well_known_sid_helper_t<::WinBuiltinDefaultSystemManagedGroupSid> { static constexpr auto get() noexcept { return S-1-5-32-581; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinStorageReplicaAdminsSid> { static constexpr auto get() noexcept { return S-1-5-32-582; } };
+        // TODO: WinAccountKeyAdminsSid
+        // TODO: WinAccountEnterpriseKeyAdminsSid
+        template<> struct well_known_sid_helper_t<::WinAuthenticationKeyTrustSid> { static constexpr auto get() noexcept { return S-1-18-4; } };
+        template<> struct well_known_sid_helper_t<::WinAuthenticationKeyPropertyMFASid> { static constexpr auto get() noexcept { return S-1-18-5; } };
+        template<> struct well_known_sid_helper_t<::WinAuthenticationKeyPropertyAttestationSid> { static constexpr auto get() noexcept { return S-1-18-6; } };
+        template<> struct well_known_sid_helper_t<::WinAuthenticationFreshKeyAuthSid> { static constexpr auto get() noexcept { return S-1-18-3; } };
+        template<> struct well_known_sid_helper_t<::WinBuiltinDeviceOwnersSid> { static constexpr auto get() noexcept { return S-1-5-32-583; } };
+    }
+
+    template<WELL_KNOWN_SID_TYPE Type>
+    __WI_LIBCPP_INLINE_VAR constexpr auto well_known_sid_v = unwrap(details::well_known_sid_helper_t<Type>::get());
+#endif
 
     /** Determines whether a specified security identifier (SID) is enabled in an access token.
     This function determines whether a security identifier, described by a given set of subauthorities, is enabled

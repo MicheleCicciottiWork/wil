@@ -2506,6 +2506,8 @@ namespace wil
     typedef unique_any_handle_invalid<decltype(&::FindClose), ::FindClose> unique_hfind;
     typedef unique_any<HMODULE, decltype(&::FreeLibrary), ::FreeLibrary> unique_hmodule;
     typedef unique_any_handle_null_only<decltype(&::CloseHandle), ::CloseHandle> unique_process_handle;
+    typedef unique_any_handle_invalid<decltype(&::FindVolumeClose), ::FindVolumeClose> unique_hfind_volume;
+    typedef unique_any_handle_invalid<decltype(&::FindVolumeMountPointClose), ::FindVolumeMountPointClose> unique_hfind_mount;
 
     typedef unique_struct<TOKEN_LINKED_TOKEN, decltype(&details::CloseTokenLinkedToken), details::CloseTokenLinkedToken> unique_token_linked_token;
 
