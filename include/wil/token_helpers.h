@@ -449,6 +449,12 @@ namespace wil
 
             WI_NODISCARD __WI_LIBCPP_CONSTEXPR PSID get() const WI_NOEXCEPT
             {
+                static_assert(AuthorityCount <= SID_MAX_SUB_AUTHORITIES, "too many sub authorities");
+                static_assert(offsetof(static_sid_t, Revision) == offsetof(_SID, Revision), "layout mismatch");
+                static_assert(offsetof(static_sid_t, SubAuthorityCount) == offsetof(_SID, SubAuthorityCount), "layout mismatch");
+                static_assert(offsetof(static_sid_t, IdentifierAuthority) == offsetof(_SID, IdentifierAuthority), "layout mismatch");
+                static_assert(offsetof(static_sid_t, SubAuthority) == offsetof(_SID, SubAuthority), "layout mismatch");
+
                 return const_cast<static_sid_t *>(this);
             }
 
@@ -473,6 +479,10 @@ namespace wil
 
             WI_NODISCARD __WI_LIBCPP_CONSTEXPR PSID get() const WI_NOEXCEPT
             {
+                static_assert(offsetof(static_sid_t, Revision) == offsetof(_SID, Revision), "layout mismatch");
+                static_assert(offsetof(static_sid_t, SubAuthorityCount) == offsetof(_SID, SubAuthorityCount), "layout mismatch");
+                static_assert(offsetof(static_sid_t, IdentifierAuthority) == offsetof(_SID, IdentifierAuthority), "layout mismatch");
+
                 return const_cast<static_sid_t *>(this);
             }
 
@@ -502,15 +512,12 @@ namespace wil
     */
     template<typename... Ts> constexpr auto make_static_sid(const SID_IDENTIFIER_AUTHORITY& authority, Ts&&... subAuthorities)
     {
-        using sid_t = details::static_sid_t<sizeof...(subAuthorities)>;
+        return details::static_sid_t<sizeof...(subAuthorities)> { SID_REVISION, sizeof...(subAuthorities), authority, { static_cast<DWORD>(subAuthorities)... } };
+    }
 
-        static_assert(sizeof...(subAuthorities) <= SID_MAX_SUB_AUTHORITIES, "too many sub authorities");
-        static_assert(offsetof(sid_t, Revision) == offsetof(_SID, Revision), "layout mismatch");
-        static_assert(offsetof(sid_t, SubAuthorityCount) == offsetof(_SID, SubAuthorityCount), "layout mismatch");
-        static_assert(offsetof(sid_t, IdentifierAuthority) == offsetof(_SID, IdentifierAuthority), "layout mismatch");
-        static_assert(offsetof(sid_t, SubAuthority) == offsetof(_SID, SubAuthority), "layout mismatch");
-
-        return sid_t { SID_REVISION, sizeof...(subAuthorities), authority, { static_cast<DWORD>(subAuthorities)... } };
+    inline constexpr auto make_static_sid(const SID_IDENTIFIER_AUTHORITY& authority)
+    {
+        return details::static_sid_t<0> { SID_REVISION, 0, authority };
     }
 
     //! Variant of static_sid that defaults to the NT authority
@@ -543,8 +550,6 @@ namespace wil
             template<std::size_t AuthorityCount, std::size_t... AuthorityIndexes>
             WI_NODISCARD constexpr auto add_rid_helper(const static_sid_builder_t<AuthorityCount>& builder, DWORD rid, std::index_sequence<AuthorityIndexes...>) noexcept
             {
-                static_assert(AuthorityCount < SID_MAX_SUB_AUTHORITIES, "too many subauthorities");
-
                 return static_sid_builder_t<AuthorityCount + 1>
                 {
                     builder.Revision,
@@ -838,6 +843,42 @@ namespace wil
         THROW_IF_FAILED(test_token_membership_nothrow(&result, token, sidAuthority, wistd::forward<Ts>(subAuthorities)...));
         return result;
     }
+#endif
+
+#ifdef ConvertStringSidToSid
+    HRESULT ConvertSidToStringSidW(LPCVOID sid, unique_hlocal_string& sid_string) WI_NOEXCEPT
+    {
+        RETURN_LAST_ERROR_IF(!::ConvertSidToStringSidW(const_cast<PSID>(sid), sid_string.put()));
+        return S_OK;
+    }
+
+#ifndef WIL_NO_ANSI_STRINGS
+    HRESULT ConvertSidToStringSidA(LPCVOID sid, unique_hlocal_ansistring& sid_string) WI_NOEXCEPT
+    {
+        RETURN_LAST_ERROR_IF(!::ConvertSidToStringSidA(const_cast<PSID>(sid), sid_string.put()));
+        return S_OK;
+    }
+#endif // WIL_NO_ANSI_STRINGS
+
+#ifdef WIL_ENABLE_EXCEPTIONS
+    unique_hlocal_string ConvertSidToStringSidW(LPCVOID sid)
+    {
+        unique_hlocal_string sid_string;
+        THROW_IF_FAILED(wil::ConvertSidToStringSidW(const_cast<PSID>(sid), sid_string));
+        return sid_string;
+    }
+
+#ifndef WIL_NO_ANSI_STRINGS
+    unique_hlocal_ansistring ConvertSidToStringSidA(LPCVOID sid) WI_NOEXCEPT
+    {
+        unique_hlocal_ansistring sid_string;
+        THROW_IF_FAILED(wil::ConvertSidToStringSidA(const_cast<PSID>(sid), sid_string));
+        return sid_string;
+    }
+#endif // WIL_NO_ANSI_STRINGS
+
+#endif // WIL_ENABLE_EXCEPTIONS
+
 #endif
 
 } //namespace wil
